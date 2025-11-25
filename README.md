@@ -10,3 +10,8 @@ If this project is useful to you, consider supporting its development:
 XMR: `49nS2i9pTLVYbqv5tUaCGCNSeHQLQkB92QbhbArm14CE77EBf4ewBmPhwuPRfZcJ6GW91Exa399uyLMQXCHZ8S4VNWYmjoN`
 
 Donations are optional but highly appreciated.
+
+## License
+
+This project is licensed under the
+[GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
