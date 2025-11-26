@@ -376,6 +376,7 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: { driver: "none" }
     networks:
       external_network:
         ipv4_address: ${ext_network_container_exit_a_ipv4}
@@ -401,6 +402,7 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: { driver: "none" }
     networks:
       external_network:
         ipv4_address: ${ext_network_container_exit_b_ipv4}
@@ -421,6 +423,7 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: always
+    logging: { driver: "none" }
     depends_on:
       - exit_a
       - exit_b
@@ -443,6 +446,7 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    logging: { driver: "none" }
     networks:
       internal_network:
         ipv4_address: ${int_network_container_support_ipv4}
