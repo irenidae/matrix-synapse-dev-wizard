@@ -376,6 +376,7 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: { driver: "none" }
     networks:
       external_network:
         ipv4_address: ${ext_network_container_exit_a_ipv4}
@@ -401,6 +402,7 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: { driver: "none" }
     networks:
       external_network:
         ipv4_address: ${ext_network_container_exit_b_ipv4}
@@ -421,6 +423,7 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: always
+    logging: { driver: "none" }
     depends_on:
       - exit_a
       - exit_b
@@ -443,6 +446,7 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    logging: { driver: "none" }
     networks:
       internal_network:
         ipv4_address: ${int_network_container_deploy_ipv4}
@@ -2631,16 +2635,16 @@ setup_switch() {
     host_net_ipv4_public_if_addr="$host_net_ipv4_public_if_addr"
 CONF
 
-    cat <<CONF | indent -4 | install -D -m 0644 -o root -g root /dev/stdin /opt/switch/docker-compose.yaml
+    cat <<'CONF' | indent -4 | install -D -m 0644 -o root -g root /dev/stdin /opt/switch/docker-compose.yaml
     services:
       tunnel:
         build:
           context: ./tunnel
           args:
-            switch_user: "\${switch_user}"
-            switch_user_group: "\${switch_user_group}"
-            switch_user_pubkey_ed25519: "\${switch_user_pubkey_ed25519}"
-            switch_external_tunnel_ipv4: "\${switch_external_tunnel_ipv4}"
+            switch_user: "${switch_user}"
+            switch_user_group: "${switch_user_group}"
+            switch_user_pubkey_ed25519: "${switch_user_pubkey_ed25519}"
+            switch_external_tunnel_ipv4: "${switch_external_tunnel_ipv4}"
         image: tunnel:latest
         container_name: tunnel
         runtime: runsc
@@ -2649,16 +2653,16 @@ CONF
         tmpfs:
           - /tmp:rw,nosuid,nodev,noexec,mode=1777
         healthcheck:
-          test: ["CMD", "nc", "-z", "\${switch_external_tunnel_ipv4}", "22"]
+          test: ["CMD", "nc", "-z", "${switch_external_tunnel_ipv4}", "22"]
           interval: 10s
           timeout: 5s
           retries: 6
           start_period: 30s
         ports:
-          - "\${host_net_ipv4_public_if_addr}:\${switch_port}:22"
+          - "${host_net_ipv4_public_if_addr}:${switch_port}:22"
         networks:
           switch_network:
-            ipv4_address: \${switch_external_tunnel_ipv4}
+            ipv4_address: ${switch_external_tunnel_ipv4}
         security_opt:
           - apparmor:docker-switch-tunnel
           - seccomp=/etc/docker/seccomp-switch.json
@@ -2669,8 +2673,8 @@ CONF
         driver: bridge
         ipam:
           config:
-            - subnet: \${switch_external_subnet_ipv4}
-              gateway: \${switch_external_gw_ipv4}
+            - subnet: ${switch_external_subnet_ipv4}
+              gateway: ${switch_external_gw_ipv4}
 CONF
 
     cat <<'CONF' | indent -4 | install -D -m 0644 -o root -g root /dev/stdin /opt/switch/tunnel/Dockerfile
@@ -3105,6 +3109,7 @@ __compose -p "${rnd_proj_name}" -f "${tmp_folder}/${rnd_proj_name}/docker-compos
 wait_stack_ready
 start_session_guard "${rnd_proj_name}" "${tmp_folder}/${rnd_proj_name}/docker-compose.yaml"
 sleep 2
+
 tty_flag="-i"
 if [ -t 1 ]; then
     tty_flag="-it"
