@@ -1553,16 +1553,16 @@ create_volumes() {
 }
 seed_tunnel_volume() {
     info "Seeding tunnel volume"
-    local t="$(mktemp -d "${tmp_folder}/tunnelseed.XXXXXXXX")"
+    local t
+    t="$(mktemp -d "${tmp_folder}/tunnelseed.XXXXXXXX")"
     install -d -m 0700 "$t"
-    printf '%s' "$ssh_raw" | base64 -d > "$t/id_ed25519"
-    chmod 600 "$t/id_ed25519"
+    printf '%s' "$ssh_raw" > "$t/ssh_raw"
 
     cat > "$t/config" <<EOF
 Host proxy
     Ciphers aes256-gcm@openssh.com
     MACs hmac-sha2-512-etm@openssh.com
-    KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256
+    KexAlgorithms sntrup761x25519-sha512@openssh.com
     HostKeyAlgorithms ssh-ed25519
     ChallengeResponseAuthentication no
     VersionAddendum none
@@ -1581,8 +1581,27 @@ Host proxy
     ControlPath /tmp/ssh_mux
 EOF
 
-    ${SUDO:-} docker run --rm -v matrix_tunnel:/ssh -v "$t":/src:ro alpine:latest sh -c 'set -e; cp -a /src/. /ssh/; chown -R 1000:1000 /ssh; chmod 600 /ssh/id_ed25519'
-    shred -u "$t/id_ed25519" 2>/dev/null || rm -f "$t/id_ed25519"
+    ${SUDO:-} docker run --rm \
+        -v matrix_tunnel:/ssh \
+        -v "$t":/src:ro \
+        alpine:latest sh -eu -c '
+            apk add --no-cache xz coreutils grep >/dev/null 2>&1 || true
+            umask 077
+            mkdir -p /ssh
+
+            tr -d " \r\n\t" </src/ssh_raw | base64 -d | xz -dc > /ssh/id_ed25519
+
+            grep -q "BEGIN OPENSSH PRIVATE KEY" /ssh/id_ed25519 || {
+                echo "seed: invalid key payload" >&2
+                exit 1
+            }
+
+            cp /src/config /ssh/config
+            chown -R 1000:1000 /ssh
+            chmod 600 /ssh/id_ed25519 /ssh/config
+        '
+
+    shred -u "$t/ssh_raw" 2>/dev/null || rm -f "$t/ssh_raw"
     rm -rf "$t"
     unset ssh_raw ssh_user ssh_port srv_ip
     info "Tunnel volume seeded"
