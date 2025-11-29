@@ -4132,7 +4132,6 @@ install() {
     && { echo "Successful" || true; sleep 1.5; } || { echo "Fault"; return 1; }
 }
 
-set -x
 clear_screen
 echo "Check tor connection..."
 sleep 10
@@ -4148,7 +4147,6 @@ read -r private_ed25519_key public_ed25519_key < <(generate_ssh_keys) || exit 1
 read -r private_deploy_ed25519_key public_deploy_ed25519_key < <(generate_ssh_keys) || exit 1
 configure_server_installer
 install
-set +x
 clear_screen
 print_tokens
 SH
