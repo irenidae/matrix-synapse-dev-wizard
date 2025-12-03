@@ -2220,7 +2220,7 @@ services:
   synapse:
     image: matrixdotorg/synapse:latest
     container_name: matrix_synapse
-    runtime: runsc
+    runtime: runc
     user: "991:991"
     restart: unless-stopped
     logging: { driver: none }
