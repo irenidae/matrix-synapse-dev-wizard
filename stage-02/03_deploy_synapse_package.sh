@@ -615,9 +615,8 @@ ENV tor_ctrl_pass="${tor_ctrl_pass}"
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN sed -i 's|http://deb.debian.org/debian|https://deb.debian.org/debian|g' /etc/apt/sources.list.d/debian.sources && \
+    rm -rf /var/lib/apt/lists/* && \
+    sed -i 's|http://deb.debian.org/debian|https://deb.debian.org/debian|g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && \
     apt-get install -y --no-install-recommends tzdata haproxy curl netcat-openbsd && \
     ln -fs /usr/share/zoneinfo/UTC /etc/localtime && \
@@ -693,9 +692,8 @@ ENV tor_ctrl_pass="${tor_ctrl_pass}"
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN sed -i 's|http://deb.debian.org/debian|https://deb.debian.org/debian|g' /etc/apt/sources.list.d/debian.sources && \
+    rm -rf /var/lib/apt/lists/* && \
+    sed -i 's|http://deb.debian.org/debian|https://deb.debian.org/debian|g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && \
     apt-get install -y --no-install-recommends tzdata bash openssh-client socat xz-utils coreutils libdigest-sha-perl dialog gnupg2 && \
     ln -fs /usr/share/zoneinfo/UTC /etc/localtime && \
@@ -725,11 +723,6 @@ cleanup() {
     if [[ "${tty_is_tty}" -eq 1 ]]; then
         [[ -n "${__orig_stty:-}" ]] && stty "${__orig_stty}" 2>/dev/null || true
     fi
-}
-safe_fmt_date() {
-    local _in="${1:-}"
-    local _fmt="${2:-+%d.%m.%Y}"
-    date -d "$_in" "$_fmt" 2>/dev/null || echo "$_in"
 }
 on_sigint() {
     if [[ -t 1 ]]; then
@@ -832,7 +825,7 @@ prompt_tokens() {
         text_raw="$(cat "$s1_txt")"
         text="$(printf '%b' "$text_raw")"
 
-        unset ssh_raw ssh_user ssh_port srv_ip ssh_user_password
+        unset ssh_raw ssh_user ssh_port srv_ip
         while IFS= read -r line; do
             [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
             k="${line%%=*}"; v="${line#*=}"
@@ -842,7 +835,6 @@ prompt_tokens() {
                 ssh_user) ssh_user="$v" ;;
                 ssh_port) ssh_port="$v" ;;
                 srv_ip) srv_ip="$v" ;;
-                ssh_user_password) ssh_user_password="$v" ;;
             esac
         done <<< "$text"
 
@@ -954,7 +946,7 @@ show_main_menu() {
     echo "2. Wipe"
     echo "3. Restore previous users"
     echo
-    echo "s. Sign in to another account"
+    echo "n. Enter new deploy token"
     echo "x. Exit"
     echo
     if [[ -n "${last_status:-}" ]]; then
@@ -967,7 +959,7 @@ show_main_menu() {
         1) deploy; show_main_menu ;;
         2) wipe; show_main_menu ;;
         3) restore; show_main_menu ;;
-        s|S) signin; show_main_menu ;;
+        n|N) signin; show_main_menu ;;
         x|X) exit_program ;;
         *) show_main_menu ;;
     esac
