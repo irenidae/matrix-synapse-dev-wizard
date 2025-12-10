@@ -2014,7 +2014,7 @@ configure_os_updater() {
     retry 5 10 apt-get -qq -o Acquire::Retries=3 update
     retry 3 20 apt-get -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=600 -y dist-upgrade
 
-    apt-get -y autoremove --purge || true
+    apt-get -y autoremove || true
     apt-get clean || true
 
     need_reboot=false
@@ -2217,7 +2217,11 @@ setup_frontend_updater_service() {
         local line svc repo_tag old_id
         for line in "${backup_lines[@]}"; do
             IFS='|' read -r svc repo_tag old_id <<<"$line"
-            docker image tag "$old_id" "$repo_tag" || true
+            if docker image inspect "$old_id" >/dev/null 2>&1; then
+                docker image tag "$old_id" "$repo_tag" || true
+            else
+                log_e "backup image missing for ${svc} (${old_id}); skipping retag"
+            fi
         done
     
         log_i "rolling back production to previous images..."
@@ -2230,14 +2234,23 @@ setup_frontend_updater_service() {
     
     probe_tunnel() {
         local name="frontend_tunnel_probe_$(rand)"
+    
         timeout 20s docker run --rm --name "$name" \
             --network "${prod_net_external}" \
             -v "${tunnel_volume}:/ssh:ro" \
+            --user root \
+            -e HOME=/root \
             --entrypoint ssh \
             "$img_tun_tag" \
-            -F /ssh/config -o BatchMode=yes -o ConnectTimeout=5 \
-            -o LogLevel=error -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            proxy true
+            -F /ssh/config \
+            -o BatchMode=yes \
+            -o ConnectTimeout=5 \
+            -o LogLevel=error \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o ExitOnForwardFailure=yes \
+            -T -N proxy
     }
     
     need_cmd docker
@@ -2369,15 +2382,15 @@ setup_frontend_updater_service() {
     exit 0
 CONF
 
-    cat <<'CONF' | indent 0 | install -D -m 0644 -o root -g root /dev/stdin /etc/systemd/system/matrix-updater.service
+    cat <<'CONF' | indent 0 | install -D -m 0644 -o root -g root /dev/stdin /etc/systemd/system/frontend-updater.service
     [Unit]
-    Description=Update matrix docker images
+    Description=Update frontend docker images
     After=network-online.target docker.service
     Wants=network-online.target docker.service
 
     [Service]
     Type=oneshot
-    ExecStart=/usr/local/sbin/matrix-updater
+    ExecStart=/usr/local/sbin/frontend-updater
     TimeoutStartSec=30m
     Nice=10
     StandardOutput=journal
@@ -2387,9 +2400,9 @@ CONF
     WantedBy=multi-user.target
 CONF
 
-    cat <<'CONF' | indent 0 | install -D -m 0644 -o root -g root /dev/stdin /etc/systemd/system/matrix-updater.timer
+    cat <<'CONF' | indent 0 | install -D -m 0644 -o root -g root /dev/stdin /etc/systemd/system/frontend-updater.timer
     [Unit]
-    Description=Run matrix-updater nightly at 02:00
+    Description=Run frontend-updater nightly at 02:00
 
     [Timer]
     OnCalendar=*-*-* 01:30
@@ -2401,59 +2414,38 @@ CONF
 CONF
 
     systemctl daemon-reload
-    systemctl enable --now matrix-updater.timer
+    systemctl enable --now frontend-updater.timer
 }
 setup_build_service() {
     cat <<'CONF' | indent -4 | install -D -m 0755 -o root -g root /dev/stdin /usr/local/sbin/build
     #!/bin/bash
+
     set -Eeuo pipefail
     IFS=$'\n\t'
+    umask 077
     
-    compose_file="/opt/frontend/data/docker-compose.yaml"
+    project_path="/opt/frontend"
+    project_dir="${project_path}/data"
+    compose_file="${project_dir}/docker-compose.yaml"
+    vol_file="${project_dir}/.volumes"
+
+    candidate_dir="${project_path}/deploy/candidate"
+    current_dir="${project_path}/deploy/current"
     compose_proj="frontend"
-    env_file="/opt/frontend/data/.env"
     
-    prod_net_internal="frontend_internal"
-    tunnel_volume="frontend_tunnel"
+    vol_cfg="frontend_nginx_config"
+    vol_tun="frontend_tunnel"
+    vol_html="frontend_nginx_html"
+    vol_acme="frontend_acme_state"
     
     ctr_nginx="frontend_nginx"
     ctr_tunnel="frontend_tunnel"
-    
-    base_image_nginx="nginx:trixie"
-    base_image_tun="debian:trixie-slim"
     
     log_i() { printf "\033[1;34m[INFO]\033[0m %s\n" "$*"; }
     log_e() { printf "\033[1;31m[ERR]\033[0m %s\n" "$*" >&2; }
     die() { log_e "$*"; exit 1; }
     
     need_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
-    
-    compose_config() {
-        docker compose -f "$compose_file" config
-    }
-    
-    get_image_of_service() {
-        local svc="$1"
-        compose_config | awk -v svc="$svc" '$0 ~ ("^[[:space:]]*" svc ":") { f=1; next } f && $1=="image:" { print $2; exit }'
-    }
-    
-    current_ctr_image_id() {
-        local ctr="$1"
-        docker inspect -f '{{.Image}}' "$ctr" 2>/dev/null || true
-    }
-    
-    img_changed() {
-        local cur="$1" new="$2"
-        if [[ -n "$cur" && -n "$new" && "$cur" == "$new" ]]; then
-            echo 0
-        else
-            echo 1
-        fi
-    }
-    
-    rand() {
-        od -An -N3 -tu4 < /dev/urandom | tr -d '[:space:]'
-    }
     
     wait_health() {
         local name="$1" timeout="${2:-120}" id hs run i
@@ -2471,175 +2463,199 @@ setup_build_service() {
         return 1
     }
     
-    prune_repo_unused() {
-        local repo="$1" keep_ref="$2"
-        docker images --format '{{.Repository}}:{{.Tag}}' \
-        | awk -v r="^${repo}:" '$0 ~ r {print}' \
-        | while read -r ref; do
-            [[ "$ref" == "$keep_ref" ]] && continue
-            if ! docker ps -aq --filter "ancestor=$ref" | grep -q .; then
-                docker rmi -f "$ref" >/dev/null 2>&1 || true
-            fi
-        done
+    restore_volume_from_tarxz() {
+        local vol_name="$1" tarxz="$2" dest="$3"
+        docker run --rm \
+            -v "${vol_name}:${dest}" \
+            -v "${tarxz%/*}:/backup:ro" \
+            alpine:latest sh -c \
+            'apk add --no-cache xz tar >/dev/null 2>&1 || true; \
+             tar -xJf "/backup/'"$(basename "$tarxz")"'" -C "'"$dest"'"'
     }
     
-    backup_lines=()
+    download_site_to_html_volume() {
+        local url="$1"
     
-    add_backup_line() {
-        local svc="$1" repo_tag="$2" old_id="$3"
-        [[ -n "$old_id" ]] && backup_lines+=( "${svc}|${repo_tag}|${old_id}" )
-    }
+        log_i "refreshing html volume from .url (container-side)..."
+        docker volume rm -f "$vol_html" >/dev/null 2>&1 || true
+        docker volume create "$vol_html" >/dev/null
     
-    rollback_to_backups() {
-        if ((${#backup_lines[@]}==0)); then
-            log_e "no backups captured; cannot rollback"
-            return 1
-        fi
+        docker run --rm \
+            -v "${vol_html}:/html" \
+            alpine:latest sh -lc '
+                set -e
     
-        log_i "retagging previous images to original repo:tag…"
-        local line svc repo_tag old_id
-        for line in "${backup_lines[@]}"; do
-            IFS='|' read -r svc repo_tag old_id <<<"$line"
-            docker image tag "$old_id" "$repo_tag" || true
-        done
+                apk add --no-cache curl tar xz gzip bzip2 >/dev/null 2>&1 || true
     
-        log_i "rolling back production to previous images…"
-        docker compose -f "$compose_file" -p "$compose_proj" up -d --force-recreate
+                URL="'"$url"'"
     
-        wait_health "$ctr_nginx" 120 || log_e "nginx may be unhealthy after rollback"
-        wait_health "$ctr_tunnel" 120 || log_e "tunnel may be unhealthy after rollback"
-        log_i "rollback complete."
-    }
+                extract_stream_once() {
+                    case "$URL" in
+                        *.tar.gz|*.tgz)
+                            curl -fsSL "$URL" | tar -xzf - -C /html
+                            ;;
+                        *.tar.xz)
+                            curl -fsSL "$URL" | tar -xJf - -C /html
+                            ;;
+                        *.tar.bz2|*.tbz|*.tbz2)
+                            curl -fsSL "$URL" | tar -xjf - -C /html
+                            ;;
+                        *.tar)
+                            curl -fsSL "$URL" | tar -xf - -C /html
+                            ;;
+                        *)
+                            curl -fsSL "$URL" | tar -xzf - -C /html 2>/dev/null \
+                            || curl -fsSL "$URL" | tar -xJf - -C /html 2>/dev/null \
+                            || curl -fsSL "$URL" | tar -xjf - -C /html 2>/dev/null \
+                            || curl -fsSL "$URL" | tar -xf  - -C /html
+                            ;;
+                    esac
+                }
     
-    probe_tunnel() {
-        local name="frontend_tunnel_probe_$(rand)"
-        timeout 20s docker run --rm --name "$name" \
-            --network "${prod_net_internal}" \
-            -v "${tunnel_volume}:/ssh:ro" \
-            "$img_tun_tag" \
-            ssh -q -F /ssh/config -o BatchMode=yes -o ConnectTimeout=5 -O check proxy
+                extract_stream() {
+                    i=0
+                    while :; do
+                        if extract_stream_once; then
+                            return 0
+                        fi
+                        i=$((i+1))
+                        [ "$i" -ge 3 ] && return 1
+                        sleep "$i"   # 1s, 2s
+                    done
+                }
+    
+                extract_stream
+    
+                # 1) Root is already correct
+                if [ -f /html/index.html ]; then
+                    exit 0
+                fi
+    
+                # 2) Common build output directories
+                for d in dist build public; do
+                    if [ -f "/html/$d/index.html" ]; then
+                        mv "/html/$d"/* /html/
+                        rmdir "/html/$d" >/dev/null 2>&1 || true
+                        exit 0
+                    fi
+                done
+    
+                # 3) Single top-level directory (e.g., versioned template folder)
+                top_dirs="$(find /html -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d " ")"
+                top_files="$(find /html -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d " ")"
+    
+                if [ "$top_dirs" = "1" ] && [ "$top_files" = "0" ]; then
+                    only_dir="$(find /html -mindepth 1 -maxdepth 1 -type d | head -n1)"
+                    if [ -f "$only_dir/index.html" ]; then
+                        mv "$only_dir"/* /html/
+                        rmdir "$only_dir" >/dev/null 2>&1 || true
+                        exit 0
+                    fi
+                fi
+    
+                # 4) Diagnostic warning
+                idx="$(find /html -maxdepth 3 -name index.html | head -n1 || true)"
+                if [ -n "$idx" ]; then
+                    echo "WARN: index.html found at $idx but not at /html/index.html"
+                else
+                    echo "WARN: index.html not found after extract"
+                fi
+            '
     }
     
     need_cmd docker
-    need_cmd awk
+    need_cmd tar
+    need_cmd base64
     need_cmd sed
-    need_cmd od
-    need_cmd tr
+    need_cmd awk
+    need_cmd sha256sum
+    need_cmd install
     need_cmd flock
-    need_cmd timeout
-    need_cmd grep
-    need_cmd xargs
     
-    [[ -f "$compose_file" ]] || die "compose file not found: $compose_file"
-    docker compose -f "$compose_file" config -q >/dev/null || die "compose syntax error"
-    [[ -f "$env_file" ]] && { set -a; . "$env_file"; set +a; }
+    install -d -m 0700 "$candidate_dir" "$current_dir"
     
-    exec 9>/run/frontend-updater.lock
+    exec 9>/run/frontend-build.lock
     if ! flock -n 9; then
-        log_i "another update run is in progress, exiting"
+        log_i "another build run is in progress, exiting"
         exit 0
     fi
     
-    log_i "resolving images from compose…"
-    img_nginx="$(get_image_of_service nginx)"; [[ -n "$img_nginx" ]] || die "image for nginx not found"
-    img_tun_tag="$(get_image_of_service tunnel)"; [[ -n "$img_tun_tag" ]] || die "image for tunnel not found"
+    archive="$(ls -1t "${candidate_dir}"/*.tar.xz 2>/dev/null | head -n1 || true)"
+    [[ -n "$archive" ]] || { log_i "no candidate archives, nothing to do"; exit 0; }
     
-    need_build_nginx=0
-    need_build_tun=0
+    base="$(basename -- "$archive")"
+    rev="${base%.tar.xz}"
+    new_sha="$(sha256sum "$archive" | awk '{print $1}')"
     
-    log_i "checking base image for nginx (${base_image_nginx})…"
-    id_nginx_base_old="$(docker image inspect -f '{{.Id}}' "$base_image_nginx" 2>/dev/null || true)"
-    docker pull "$base_image_nginx" >/dev/null 2>&1 || true
-    id_nginx_base_new="$(docker image inspect -f '{{.Id}}' "$base_image_nginx" 2>/dev/null || true)"
-    
-    if [[ -z "$id_nginx_base_old" || -z "$id_nginx_base_new" || "$id_nginx_base_old" != "$id_nginx_base_new" ]]; then
-        log_i "nginx base image changed or missing; will rebuild nginx service image"
-        need_build_nginx=1
+    cur_rev=""
+    cur_sha=""
+    if [[ -f "$current_dir/.current" ]]; then
+        read -r cur_rev cur_sha < "$current_dir/.current" || true
     fi
     
-    if ! docker image inspect "$img_nginx" >/dev/null 2>&1; then
-        log_i "nginx service image $img_nginx missing; will rebuild"
-        need_build_nginx=1
-    fi
-    
-    if (( need_build_nginx )); then
-        log_i "building nginx image ($img_nginx)…"
-        docker compose -f "$compose_file" -p "$compose_proj" build nginx
-    fi
-    
-    log_i "checking base image for tunnel (${base_image_tun})…"
-    id_tun_base_old="$(docker image inspect -f '{{.Id}}' "$base_image_tun" 2>/dev/null || true)"
-    docker pull "$base_image_tun" >/dev/null 2>&1 || true
-    id_tun_base_new="$(docker image inspect -f '{{.Id}}' "$base_image_tun" 2>/dev/null || true)"
-    
-    if [[ -z "$id_tun_base_old" || -z "$id_tun_base_new" || "$id_tun_base_old" != "$id_tun_base_new" ]]; then
-        log_i "tunnel base image changed or missing; will rebuild tunnel service image"
-        need_build_tun=1
-    fi
-    
-    if ! docker image inspect "$img_tun_tag" >/dev/null 2>&1; then
-        log_i "tunnel service image $img_tun_tag missing; will rebuild"
-        need_build_tun=1
-    fi
-    
-    if (( need_build_tun )); then
-        log_i "building tunnel image ($img_tun_tag)…"
-        docker compose -f "$compose_file" -p "$compose_proj" build tunnel
-    fi
-    
-    id_nginx_new="$(docker image inspect -f '{{.Id}}' "$img_nginx" 2>/dev/null || true)"
-    id_tun_new="$(docker image inspect -f '{{.Id}}' "$img_tun_tag" 2>/dev/null || true)"
-    
-    id_nginx_cur="$(current_ctr_image_id "$ctr_nginx")"
-    id_tun_cur="$(current_ctr_image_id "$ctr_tunnel")"
-    
-    changed_nginx="$(img_changed "$id_nginx_cur" "$id_nginx_new")"
-    changed_tun="$(img_changed "$id_tun_cur" "$id_tun_new")"
-    
-    if [[ "$changed_nginx" -eq 0 && "$changed_tun" -eq 0 ]]; then
-        log_i "images unchanged; nothing to do"
+    if [[ -n "${cur_sha:-}" && "$new_sha" == "$cur_sha" ]]; then
+        log_i "archive unchanged (rev=${cur_rev:-unknown}); nothing to do"
         exit 0
     fi
     
-    [[ "$changed_nginx" -eq 1 && -n "$id_nginx_cur" ]] && add_backup_line "nginx" "$img_nginx" "$id_nginx_cur"
-    [[ "$changed_tun"   -eq 1 && -n "$id_tun_cur"   ]] && add_backup_line "tunnel" "$img_tun_tag" "$id_tun_cur"
+    tmp_dir="$(mktemp -d -t frontend-build.XXXXXXXX)"
+    cleanup() { rm -rf "$tmp_dir" >/dev/null 2>&1 || true; }
+    trap cleanup EXIT
     
-    log_i "rolling production (frontend nginx + tunnel)…"
+    log_i "extracting data/ from $base..."
+    rm -rf "$project_dir"
+    tar -xJf "$archive" -C "$project_path"
     
-    if [[ "$changed_tun" -eq 1 ]]; then
-        log_i "probing tunnel image…"
-        if ! probe_tunnel; then
-            log_e "tunnel probe failed — rolling back"
-            rollback_to_backups || true
-            exit 1
-        fi
+    [[ -f "$compose_file" ]] || die "compose file missing after extract: $compose_file"
+    [[ -f "$vol_file" ]] || die ".volumes missing after extract: $vol_file"
     
-        docker compose -f "$compose_file" -p "$compose_proj" up -d --no-deps --no-build tunnel
-        if ! wait_health "$ctr_tunnel" 120; then
-            log_e "tunnel unhealthy after rollout — rolling back"
-            rollback_to_backups || true
-            exit 1
-        fi
+    docker compose -f "$compose_file" -p "$compose_proj" config -q >/dev/null || die "compose syntax error after extract"
+    
+    archive_url="$(cat "${project_dir}/.url" 2>/dev/null | tr -d '\r' || true)"
+    [[ -n "$archive_url" ]] || die ".url is empty after extract"
+    
+    get_b64() {
+        sed -n "s/^$1=\"\([^\"]*\)\".*/\1/p" "$vol_file" | head -n1
+    }
+    
+    b64_cfg="$(get_b64 volume_frontend_nginx_config)"
+    b64_tun="$(get_b64 volume_frontend_tunnel)"
+    
+    [[ -n "$b64_cfg" ]] || die "missing volume_frontend_nginx_config"
+    [[ -n "$b64_tun" ]] || die "missing volume_frontend_tunnel"
+    
+    printf '%s' "$b64_cfg" | base64 -d > "${tmp_dir}/nginx_config.tar.xz"
+    printf '%s' "$b64_tun" | base64 -d > "${tmp_dir}/tunnel.tar.xz"
+    
+    docker compose -f "$compose_file" -p "$compose_proj" down --remove-orphans >/dev/null 2>&1 || true
+    
+    log_i "restoring volumes: nginx_config, tunnel..."
+    docker volume rm -f "$vol_cfg" "$vol_tun" >/dev/null 2>&1 || true
+    docker volume create "$vol_cfg" >/dev/null
+    docker volume create "$vol_tun" >/dev/null
+    
+    restore_volume_from_tarxz "$vol_cfg" "${tmp_dir}/nginx_config.tar.xz" "/data"
+    restore_volume_from_tarxz "$vol_tun" "${tmp_dir}/tunnel.tar.xz" "/ssh"
+    
+    if ! docker volume inspect "$vol_acme" >/dev/null 2>&1; then
+        log_i "creating missing acme volume..."
+        docker volume create "$vol_acme" >/dev/null
     fi
     
-    if [[ "$changed_nginx" -eq 1 ]]; then
-        docker compose -f "$compose_file" -p "$compose_proj" up -d --no-deps --no-build nginx
-        if ! wait_health "$ctr_nginx" 120; then
-            log_e "nginx unhealthy after rollout — rolling back"
-            rollback_to_backups || true
-            exit 1
-        fi
-    fi
+    download_site_to_html_volume "$archive_url"
     
-    nginx_repo="${img_nginx%:*}"
-    tun_repo="${img_tun_tag%:*}"
-    prune_repo_unused "$nginx_repo" "$img_nginx"
-    prune_repo_unused "$tun_repo" "$img_tun_tag"
+    log_i "starting new stack..."
+    docker compose -f "$compose_file" -p "$compose_proj" up -d --force-recreate
     
-    docker image prune -f >/dev/null 2>&1 || true
-    docker builder prune -f >/dev/null 2>&1 || true
+    wait_health "$ctr_tunnel" 120 || log_e "tunnel may be unhealthy"
+    wait_health "$ctr_nginx" 120 || log_e "nginx may be unhealthy"
     
-    log_i "update complete."
+    printf "%s %s\n" "$rev" "$new_sha" > "$current_dir/.current"
+    
+    rm -f "$current_dir"/*.tar.xz 2>/dev/null || true
+    mv -f -- "$archive" "$current_dir/$base" 2>/dev/null || true
+    
+    log_i "build complete (rev=$rev)."
     exit 0
 CONF
 
