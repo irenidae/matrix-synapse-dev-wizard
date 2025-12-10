@@ -2076,7 +2076,7 @@ configure_os_updater() {
     retry 5 10 apt-get -qq -o Acquire::Retries=3 update
     retry 3 20 apt-get -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=600 -y dist-upgrade
 
-    apt-get -y autoremove --purge || true
+    apt-get -y autoremove || true
     apt-get clean || true
 
     need_reboot=false
