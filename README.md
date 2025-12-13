@@ -11,8 +11,8 @@ Run the setup script for the switch server.
 At the end of the script execution, API tokens will be printed to the console — **copy and save them**, they will be needed for the following stages.
 
 #### Requirements
-\-\- New VPS (Debian 13+), **Config:** `2 vCPU / 2 GB RAM`<br>
-\-\- VPS IP address and initial **root password** from your provider
+\- New VPS (Debian 13+), **Config:** `2 vCPU / 2 GB RAM`<br>
+\- VPS IP address and initial **root password** from your provider
 
 ```bash
 bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-01/01_setup_switch_server.sh')"
@@ -25,8 +25,8 @@ bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.co
 Prepare the VPS environment for Synapse: install dependencies and base configuration so the host is ready for later deployment (no Synapse build at this step). At the end of the script execution, API tokens will be printed to the console — **copy and save them**, they will be needed for the following stages.
 
 #### Requirements
-\-\-New VPS (Debian 13+), **Config:** `2 vCPU / 2 GB RAM` `2 vCPU / 4 GB RAM` `4 vCPU / 4 GB RAM`<br>
-\-\-VPS IP address and initial **root password** from your provider
+\- New VPS (Debian 13+), **Config:** `2 vCPU / 2 GB RAM` `2 vCPU / 4 GB RAM` `4 vCPU / 4 GB RAM`<br>
+\- VPS IP address and initial **root password** from your provider
 
 ```bash
 bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-02/01_setup_synapse_server.sh')"
@@ -55,8 +55,8 @@ bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.co
 Prepare the frontend server (web server, runtime, static hosting).
 
 #### Requirements
-\-\-New VPS (Debian 13+), **Config:** `2 vCPU / 2 GB RAM`<br>
-\-\-VPS IP address and initial **root password** from your provider
+\- New VPS (Debian 13+), **Config:** `2 vCPU / 2 GB RAM`<br>
+\- VPS IP address and initial **root password** from your provider
 
 ```bash
 bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-03/01_setup_frontend_server.sh')"
