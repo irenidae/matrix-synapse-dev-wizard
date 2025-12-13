@@ -14,6 +14,7 @@ At the end of the script execution, API tokens will be printed to the console â€
 - New VPS (Debian 13+), **Config:** `2 vCPU / 2 GB RAM`
 - VPS IP address and initial **root password** from your provider
 
+
 ```bash
 bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-01/01_setup_switch_server.sh')"
 ```
@@ -27,6 +28,7 @@ Prepare the VPS environment for Synapse: install dependencies and base configura
 #### Requirements
 - New VPS (Debian 13+), **Config:** `2 vCPU / 2 GB RAM` `2 vCPU / 4 GB RAM` `4 vCPU / 4 GB RAM`
 - VPS IP address and initial **root password** from your provider
+
 
 ```bash
 bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-02/01_setup_synapse_server.sh')"
@@ -57,6 +59,7 @@ Prepare the frontend server (web server, runtime, static hosting).
 #### Requirements
 - New VPS (Debian 13+), **Config:** `2 vCPU / 2 GB RAM`
 - VPS IP address and initial **root password** from your provider
+
 
 ```bash
 bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-03/01_setup_frontend_server.sh')"
