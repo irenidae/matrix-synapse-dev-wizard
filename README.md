@@ -29,7 +29,7 @@ Prepare the VPS environment for Synapse: install dependencies and base configura
 \- VPS IP address and initial **root password** from your provider
 
 ```bash
-bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-02/01_setup_synapse_server.sh')"
+bash <(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-02/01_setup_synapse_server.sh')
 ```
 
 #### 2.2 – Build the Synapse package
@@ -59,7 +59,7 @@ Prepare the frontend server (web server, runtime, static hosting).
 \- VPS IP address and initial **root password** from your provider
 
 ```bash
-bash -c "$(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-03/01_setup_frontend_server.sh')"
+bash <(curl -sSfL --http2 --proto '=https' 'https://raw.githubusercontent.com/irenidae/matrix-synapse-dev-wizard/refs/heads/main/stage-03/01_setup_frontend_server.sh')
 ```
 
 #### 3.2 – Point your domain to the VPS
