@@ -26,6 +26,7 @@ export xargs_r
 # Keep SUDO exported for backward compatibility (always empty).
 SUDO=""
 export SUDO
+DOCKER_OK=0
 
 require_docker_access() {
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -55,6 +56,7 @@ require_docker_access() {
             exit 1
         fi
 
+        DOCKER_OK=1
         return 0
     fi
 
@@ -89,6 +91,7 @@ require_docker_access() {
         exit 1
     fi
 
+    DOCKER_OK=1
     return 0
 }
 
@@ -258,7 +261,11 @@ cleanup_all() {
     set +e
 
     stop_session_guard
-    cleanup_project "${rnd_proj_name}" "${tmp_folder}/${rnd_proj_name}/docker-compose.yaml"
+
+    # If docker is not accessible, do not call docker at all (avoids permission spam).
+    if [[ "${DOCKER_OK:-0}" == "1" ]]; then
+        cleanup_project "${rnd_proj_name}" "${tmp_folder}/${rnd_proj_name}/docker-compose.yaml"
+    fi
 
     local f d
     if [[ ${_tmp_files+x} ]]; then
@@ -274,7 +281,7 @@ cleanup_all() {
 
     rm -rf -- "${tmp_folder:-}" 2>/dev/null || true
 
-    if docker info >/dev/null 2>&1; then
+    if [[ "${DOCKER_OK:-0}" == "1" ]]; then
         prune_build_caches
 
         if [[ "${STRICT_CLEANUP:-0}" == "1" ]]; then
@@ -543,12 +550,12 @@ tmp_folder="$(mktemp -d -t deploystack.XXXXXXXX)"
 append_tmp_dir "$tmp_folder"
 rnd_proj_name="deploystack_$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 8 || true)"
 
-trap 'cleanup_all; exit 130' INT
-trap 'cleanup_all' EXIT TERM HUP QUIT
-
 QUIET_CHECK_PKG=1
 check_pkg
 require_docker_access
+
+trap 'cleanup_all; exit 130' INT
+trap 'cleanup_all' EXIT TERM HUP QUIT
 
 preclean_patterns
 
