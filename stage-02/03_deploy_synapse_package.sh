@@ -343,10 +343,6 @@ run_build_proxy() {
     local proj_dir="${tmp_folder}/${rnd_proj_name}"
     mkdir -p "${tmp_folder}/${rnd_proj_name}"/{exit_a,exit_b,haproxy,deploy}
 
-    local host_uid host_gid
-    host_uid="$(id -u)"
-    host_gid="$(id -g)"
-
 cat <<EOF > "${tmp_folder}/${rnd_proj_name}/.env"
 int_network_container_subnet_cidr_ipv4="$int_network_container_subnet_cidr_ipv4"
 int_network_container_gateway_ipv4="$int_network_container_gateway_ipv4"
@@ -360,8 +356,6 @@ ext_network_container_exit_a_ipv4="$ext_network_container_exit_a_ipv4"
 ext_network_container_exit_b_ipv4="$ext_network_container_exit_b_ipv4"
 tor_ctrl_pass="${tor_ctrl_pass}"
 tor_ctrl_hash="${tor_ctrl_hash}"
-HOST_UID="${host_uid}"
-HOST_GID="${host_gid}"
 EOF
 
 cat <<'EOF'> "${tmp_folder}/${rnd_proj_name}/docker-compose.yaml"
@@ -453,7 +447,7 @@ services:
     runtime: runc
     volumes:
       - ${HOME}/Downloads/matrix:/home/user/Downloads:ro
-    user: "${HOST_UID}:${HOST_GID}"
+    user: "1000:1000"
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
