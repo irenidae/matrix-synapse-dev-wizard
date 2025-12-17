@@ -22,62 +22,62 @@ else
 fi
 export xargs_r
 
-SUDO=""
+require_docker_access() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        info "macOS detected."
+        if ! command -v docker >/dev/null 2>&1; then
+            err "Docker is not installed."
+            info "hint: Install Docker Desktop, launch it, then re-run this script."
+            exit 1
+        fi
 
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    info "macOS detected."
+        if [[ -n "${DOCKER_HOST:-}" && "${DOCKER_HOST}" == unix://* ]]; then
+            local sock
+            sock="${DOCKER_HOST#unix://}"
+            if [[ ! -S "$sock" ]]; then
+                err  "DOCKER_HOST points to '$sock', but that socket does not exist."
+                info "hint: Start Docker Desktop, or run: unset DOCKER_HOST ; docker context use default"
+                exit 1
+            fi
+        fi
+
+        if ! docker info >/dev/null 2>&1; then
+            err  "Docker is installed but not running."
+            info "hint: Open 'Docker.app' and wait until the whale icon stops animating, then re-run this script."
+            info "hint: If you use custom contexts, try: unset DOCKER_HOST ; docker context use default"
+            exit 1
+        fi
+
+        info "Docker Desktop is running."
+        return 0
+    fi
+
+    # Linux: require docker group membership (no sudo docker; avoids root-owned bind mounts)
     if ! command -v docker >/dev/null 2>&1; then
         err "Docker is not installed."
-        info "hint: Install Docker Desktop, launch it, then re-run this script."
+        info "hint: install docker, then re-run this script."
         exit 1
     fi
 
-    if [[ -n "${DOCKER_HOST:-}" && "${DOCKER_HOST}" == unix://* ]]; then
-        sock="${DOCKER_HOST#unix://}"
-        if [[ ! -S "$sock" ]]; then
-            err  "DOCKER_HOST points to '$sock', but that socket does not exist."
-            info "hint: Start Docker Desktop, or run: unset DOCKER_HOST ; docker context use default"
-            exit 1
-        fi
+    if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
+        err "Your user is not in the 'docker' group."
+        info "Please add your user to the docker group to run docker without sudo (and avoid root-owned bind mounts)."
+        info "Run:"
+        info "  sudo groupadd docker 2>/dev/null || true"
+        info "  sudo usermod -aG docker \$USER"
+        info "Then close this terminal and open a new one (or run: newgrp docker), and run this script again."
+        exit 1
     fi
 
     if ! docker info >/dev/null 2>&1; then
-        err  "Docker is installed but not running."
-        info "hint: Open 'Docker.app' and wait until the whale icon stops animating, then re-run this script."
-        info "hint: If you use custom contexts, try: unset DOCKER_HOST ; docker context use default"
+        err "Docker is installed but not accessible without sudo."
+        info "hint: start docker daemon (systemd): sudo systemctl enable --now docker"
         exit 1
     fi
 
-    SUDO=""
-    info "Docker Desktop is running."
-else
-    if docker ps >/dev/null 2>&1; then
-        SUDO=""
-        info "docker is usable without sudo."
-    else
-        if command -v sudo >/dev/null 2>&1; then
-            if sudo -n true 2>/dev/null; then
-                SUDO="sudo"
-                info "using passwordless sudo for docker."
-            else
-                if [[ -t 0 && -t 1 ]]; then
-                    info "asking for sudo password to use docker…"
-                    sudo -v || { err "sudo authentication failed."; exit 1; }
-                    SUDO="sudo"
-                else
-                    err  "docker requires sudo but no TTY is available to prompt for password."
-                    info "hint: add your user to the docker group or enable passwordless sudo for docker."
-                    exit 1
-                fi
-            fi
-        else
-            err "docker is not accessible and sudo is not installed."
-            exit 1
-        fi
-    fi
-fi
+    info "docker is usable without sudo."
+}
 
-export SUDO
 declare -a _tmp_files=()
 declare -a _tmp_dirs=()
 declare -a _tmp_images=()
@@ -85,77 +85,56 @@ append_tmp_file() { _tmp_files+=("$1"); }
 append_tmp_dir() { _tmp_dirs+=("$1"); }
 append_tmp_image() { _tmp_images+=("$1"); }
 
-sudo_keepalive_start() {
-    local max_minutes="${1:-60}"
-
-    [[ "${SUDO:-}" != "sudo" ]] && return 0
-
-    sudo -v || exit 1
-    (
-        local end=$((SECONDS + max_minutes*60))
-        while (( SECONDS < end )); do
-            sleep 60
-            kill -0 "$PPID" 2>/dev/null || exit 0
-            sudo -n -v 2>/dev/null || exit 0
-        done
-    ) & SUDO_KEEPALIVE_PID=$!
-}
-sudo_keepalive_stop() {
-    if [[ -n "${SUDO_KEEPALIVE_PID:-}" ]]; then
-        kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
-        unset SUDO_KEEPALIVE_PID
-    fi
-    if [[ "${SUDO:-}" == "sudo" ]]; then
-        sudo -K 2>/dev/null || true
-    fi
-}
 __compose() {
-    if ${SUDO} docker compose version >/dev/null 2>&1; then
-        ${SUDO} docker compose "$@"
+    if docker compose version >/dev/null 2>&1; then
+        docker compose "$@"
     elif command -v docker-compose >/dev/null 2>&1; then
-        ${SUDO} docker-compose "$@"
+        docker-compose "$@"
     else
         err "docker compose is not available."
         return 1
     fi
 }
-prune_build_caches() {
-    ${SUDO} docker builder prune -af >/dev/null 2>&1 || true
 
-    if ${SUDO} docker buildx ls >/dev/null 2>&1; then
-        if ${SUDO} docker buildx ls --format '{{.Name}}' >/dev/null 2>&1; then
+prune_build_caches() {
+    docker builder prune -af >/dev/null 2>&1 || true
+
+    if docker buildx ls >/dev/null 2>&1; then
+        if docker buildx ls --format '{{.Name}}' >/dev/null 2>&1; then
             while IFS= read -r bname; do
                 [[ -z "$bname" ]] && continue
                 bname="${bname%\*}"
-                ${SUDO} docker buildx prune --builder "$bname" -af >/dev/null 2>&1 || true
-            done < <(${SUDO} docker buildx ls --format '{{.Name}}')
+                docker buildx prune --builder "$bname" -af >/dev/null 2>&1 || true
+            done < <(docker buildx ls --format '{{.Name}}')
         else
             while IFS= read -r bname; do
                 [[ -z "$bname" ]] && continue
                 bname="${bname%\*}"
-                ${SUDO} docker buildx prune --builder "$bname" -af >/dev/null 2>&1 || true
-            done < <(${SUDO} docker buildx ls | awk 'NR>1{print $1}')
+                docker buildx prune --builder "$bname" -af >/dev/null 2>&1 || true
+            done < <(docker buildx ls | awk 'NR>1{print $1}')
         fi
     fi
 }
+
 preclean_patterns() {
     for name in exit_a exit_b haproxy support; do
-        ${SUDO} docker ps -aq -f "name=^${name}$" | xargs ${xargs_r} ${SUDO} docker rm -f >/dev/null 2>&1 || true
+        docker ps -aq -f "name=^${name}$" | xargs ${xargs_r} docker rm -f >/dev/null 2>&1 || true
     done
     local nets=()
     [[ -n "${ext_network_container_subnet_cidr_ipv4:-}" ]] && nets+=( "$ext_network_container_subnet_cidr_ipv4" )
     [[ -n "${int_network_container_subnet_cidr_ipv4:-}" ]] && nets+=( "$int_network_container_subnet_cidr_ipv4" )
-    ${SUDO} docker network ls -q | while read -r nid; do
-        subnets=$(${SUDO} docker network inspect "$nid" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null || true)
+    docker network ls -q | while read -r nid; do
+        subnets=$(docker network inspect "$nid" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null || true)
         for net in "${nets[@]}"; do
             if echo "$subnets" | grep -qw -- "$net"; then
-                ${SUDO} docker network rm "$nid" >/dev/null 2>&1 || true
+                docker network rm "$nid" >/dev/null 2>&1 || true
                 break
             fi
         done
     done
     prune_build_caches
 }
+
 cleanup_project() {
     local proj="$1"
     local yml="$2"
@@ -165,13 +144,13 @@ cleanup_project() {
     fi
 
     for name in exit_a exit_b haproxy deploy; do
-        ${SUDO} docker ps -aq -f "name=^${name}$" | xargs ${xargs_r} ${SUDO} docker rm -f >/dev/null 2>&1 || true
+        docker ps -aq -f "name=^${name}$" | xargs ${xargs_r} docker rm -f >/dev/null 2>&1 || true
     done
 
-    ${SUDO} docker network ls -q --filter "label=com.docker.compose.project=${proj}" | xargs ${xargs_r} ${SUDO} docker network rm >/dev/null 2>&1 || true
-    ${SUDO} docker volume ls -q --filter "label=com.docker.compose.project=${proj}" | xargs ${xargs_r} ${SUDO} docker volume rm -f >/dev/null 2>&1 || true
-    if [[ -z "$(${SUDO} docker ps -aq --filter ancestor=debian:trixie-slim 2>/dev/null)" ]]; then
-        ${SUDO} docker rmi -f debian:trixie-slim >/dev/null 2>&1 || true
+    docker network ls -q --filter "label=com.docker.compose.project=${proj}" | xargs ${xargs_r} docker network rm >/dev/null 2>&1 || true
+    docker volume ls -q --filter "label=com.docker.compose.project=${proj}" | xargs ${xargs_r} docker volume rm -f >/dev/null 2>&1 || true
+    if [[ -z "$(docker ps -aq --filter ancestor=debian:trixie-slim 2>/dev/null || true)" ]]; then
+        docker rmi -f debian:trixie-slim >/dev/null 2>&1 || true
     fi
 }
 
@@ -198,15 +177,15 @@ tty_path="$4"
 
 on_term() {
     if [[ -f "$yml" ]]; then
-        ${SUDO:-} docker compose -p "$proj" -f "$yml" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
+        docker compose -p "$proj" -f "$yml" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
     fi
 
     for name in exit_a exit_b haproxy deploy; do
-        ${SUDO:-} docker ps -aq -f "name=^${name}$" | xargs ${xargs_r:-} ${SUDO:-} docker rm -f >/dev/null 2>&1 || true
+        docker ps -aq -f "name=^${name}$" | xargs ${xargs_r:-} docker rm -f >/dev/null 2>&1 || true
     done
 
-    ${SUDO:-} docker network ls -q --filter "label=com.docker.compose.project=${proj}" | xargs ${xargs_r:-} ${SUDO:-} docker network rm >/dev/null 2>&1 || true
-    ${SUDO:-} docker volume ls -q --filter "label=com.docker.compose.project=${proj}" | xargs ${xargs_r:-} ${SUDO:-} docker volume rm -f >/dev/null 2>&1 || true
+    docker network ls -q --filter "label=com.docker.compose.project=${proj}" | xargs ${xargs_r:-} docker network rm >/dev/null 2>&1 || true
+    docker volume ls -q --filter "label=com.docker.compose.project=${proj}" | xargs ${xargs_r:-} docker volume rm -f >/dev/null 2>&1 || true
 
     exit 0
 }
@@ -240,6 +219,7 @@ EOS
 
     guard_pid="$(cat "$pidfile" 2>/dev/null || true)"
 }
+
 stop_session_guard() {
     local pid="${guard_pid:-}"
 
@@ -259,6 +239,7 @@ stop_session_guard() {
     kill -KILL "$pid" 2>/dev/null || true
     unset guard_pid
 }
+
 cleanup_all() {
     set +e
 
@@ -279,18 +260,18 @@ cleanup_all() {
 
     rm -rf -- "${tmp_folder:-}" 2>/dev/null || true
 
-    if ${SUDO} docker info >/dev/null 2>&1; then
+    if docker info >/dev/null 2>&1; then
         prune_build_caches
 
         if [[ "${STRICT_CLEANUP:-0}" == "1" ]]; then
             warn "Performing system-wide prune (--all --volumes)."
-            ${SUDO} docker system prune -af --volumes >/dev/null 2>&1 || true
+            docker system prune -af --volumes >/dev/null 2>&1 || true
         fi
     fi
 
-    sudo_keepalive_stop
     set -e
 }
+
 check_pkg() {
     local os=""
 
@@ -336,9 +317,14 @@ check_pkg() {
         sudo systemctl enable --now docker 2>/dev/null || true
     fi
 }
+
 run_build_proxy() {
     local proj_dir="${tmp_folder}/${rnd_proj_name}"
     mkdir -p "${tmp_folder}/${rnd_proj_name}"/{exit_a,exit_b,haproxy,deploy}
+
+    local host_uid host_gid
+    host_uid="$(id -u)"
+    host_gid="$(id -g)"
 
 cat <<EOF > "${tmp_folder}/${rnd_proj_name}/.env"
 int_network_container_subnet_cidr_ipv4="$int_network_container_subnet_cidr_ipv4"
@@ -353,6 +339,8 @@ ext_network_container_exit_a_ipv4="$ext_network_container_exit_a_ipv4"
 ext_network_container_exit_b_ipv4="$ext_network_container_exit_b_ipv4"
 tor_ctrl_pass="${tor_ctrl_pass}"
 tor_ctrl_hash="${tor_ctrl_hash}"
+HOST_UID="${host_uid}"
+HOST_GID="${host_gid}"
 EOF
 
 cat <<'EOF'> "${tmp_folder}/${rnd_proj_name}/docker-compose.yaml"
@@ -444,7 +432,7 @@ services:
     runtime: runc
     volumes:
       - ${HOME}/Downloads/matrix:/home/user/Downloads:ro
-    user: "1000:1000"
+    user: "${HOST_UID}:${HOST_GID}"
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
@@ -468,6 +456,8 @@ networks:
         - subnet: ${int_network_container_subnet_cidr_ipv4}
           gateway: ${int_network_container_gateway_ipv4}
 EOF
+
+# --- Dockerfiles below are unchanged from your original script ---
 
 cat <<'EOF'> "${tmp_folder}/${rnd_proj_name}/exit_a/Dockerfile"
 FROM debian:trixie-slim
@@ -676,6 +666,7 @@ RUN apt-get autoremove -y && \
 CMD ["haproxy","-f","/etc/haproxy/haproxy.cfg","-db"]
 EOF
 
+# deploy/Dockerfile: unchanged (your original)
 cat <<'EOF'> "${tmp_folder}/${rnd_proj_name}/deploy/Dockerfile"
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
@@ -978,13 +969,14 @@ WORKDIR /home/user
 CMD ["sleep","infinity"]
 EOF
 }
+
 wait_health() {
     local name="$1" timeout="${2:-180}" id hs run i
     for ((i=0; i<timeout; i++)); do
-        id="$(${SUDO:-} docker ps --filter "name=^${name}$" --format '{{.ID}}' | head -n1)"
+        id="$(docker ps --filter "name=^${name}$" --format '{{.ID}}' | head -n1)"
         if [[ -n "$id" ]]; then
-            hs="$(${SUDO:-} docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{""}}{{end}}' "$id" 2>/dev/null || true)"
-            run="$(${SUDO:-} docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)"
+            hs="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{""}}{{end}}' "$id" 2>/dev/null || true)"
+            run="$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)"
             if [[ "$hs" == "healthy" || ( -z "$hs" && "$run" == "true" ) ]]; then
                 return 0
             fi
@@ -993,13 +985,15 @@ wait_health() {
     done
     return 1
 }
+
 print_health_log() {
     local name="$1" id
-    id="$(${SUDO:-} docker ps --filter "name=^${name}$" --format '{{.ID}}' | head -n1)"
+    id="$(docker ps --filter "name=^${name}$" --format '{{.ID}}' | head -n1)"
     [[ -n "$id" ]] || return 0
 
-    ${SUDO:-} docker inspect -f '{{range .State.Health.Log}}{{printf "[%s] code=%d %s\n" .Start .ExitCode .Output}}{{end}}' "$id" 1>&2 || true
+    docker inspect -f '{{range .State.Health.Log}}{{printf "[%s] code=%d %s\n" .Start .ExitCode .Output}}{{end}}' "$id" 1>&2 || true
 }
+
 wait_stack_ready() {
     info "Waiting for exit_a health"
     if ! wait_health exit_a 180; then
@@ -1028,6 +1022,7 @@ ext_base=${ext_base%.*}.
 ext_network_container_gateway_ipv4="${ext_base}1"
 ext_network_container_exit_a_ipv4="${ext_base}2"
 ext_network_container_exit_b_ipv4="${ext_base}3"
+
 int_network_container_subnet_cidr_ipv4="172.16.85.0/29"
 int_base=${int_network_container_subnet_cidr_ipv4%/*}
 int_base=${int_base%.*}.
@@ -1040,21 +1035,25 @@ int_network_container_deploy_ipv4="${int_base}5"
 tmp_folder="$(mktemp -d -t deploystack.XXXXXXXX)"
 append_tmp_dir "$tmp_folder"
 rnd_proj_name="deploystack_$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 8 || true)"
-sudo_keepalive_start 90
+
 trap 'cleanup_all; exit 130' INT
 trap 'cleanup_all' EXIT TERM HUP QUIT
+
 check_pkg
+require_docker_access
 preclean_patterns
+
 tor_ctrl_pass="$(LC_ALL=C tr -dc 'A-Za-z0-9!?+=_' </dev/urandom | head -c 32 || true)"
 tor_ctrl_hash="$(
-    ${SUDO} docker run --rm debian:trixie-slim bash -ceu '
+    docker run --rm debian:trixie-slim bash -ceu '
         set -e
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
-        apt-get install -y --no-install-recommends tor >/dev/null
+        apt-get install -y --no-installrecommends tor >/dev/null
         tor --hash-password "'"$tor_ctrl_pass"'"
     ' | tail -n 1
 )"
+
 run_build_proxy
 __compose -p "${rnd_proj_name}" -f "${tmp_folder}/${rnd_proj_name}/docker-compose.yaml" build --no-cache
 __compose -p "${rnd_proj_name}" -f "${tmp_folder}/${rnd_proj_name}/docker-compose.yaml" up -d --force-recreate
@@ -1067,4 +1066,4 @@ if [ -t 1 ]; then
     tty_flag="-it"
 fi
 clear_scr
-${SUDO} docker exec $tty_flag deploy /bin/bash -lc 'exec ./deploy'
+docker exec $tty_flag deploy /bin/bash -lc 'exec ./deploy'
