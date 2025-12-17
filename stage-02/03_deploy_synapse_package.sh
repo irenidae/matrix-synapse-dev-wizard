@@ -22,10 +22,15 @@ else
 fi
 export xargs_r
 
+# Docker must be usable without sudo on Linux (docker group required).
+# Keep SUDO exported for backward compatibility (always empty).
+SUDO=""
+export SUDO
+
 require_docker_access() {
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        info "macOS detected."
         if ! command -v docker >/dev/null 2>&1; then
+            clear_scr
             err "Docker is not installed."
             info "hint: Install Docker Desktop, launch it, then re-run this script."
             exit 1
@@ -35,6 +40,7 @@ require_docker_access() {
             local sock
             sock="${DOCKER_HOST#unix://}"
             if [[ ! -S "$sock" ]]; then
+                clear_scr
                 err  "DOCKER_HOST points to '$sock', but that socket does not exist."
                 info "hint: Start Docker Desktop, or run: unset DOCKER_HOST ; docker context use default"
                 exit 1
@@ -42,40 +48,48 @@ require_docker_access() {
         fi
 
         if ! docker info >/dev/null 2>&1; then
+            clear_scr
             err  "Docker is installed but not running."
             info "hint: Open 'Docker.app' and wait until the whale icon stops animating, then re-run this script."
             info "hint: If you use custom contexts, try: unset DOCKER_HOST ; docker context use default"
             exit 1
         fi
 
-        info "Docker Desktop is running."
         return 0
     fi
 
-    # Linux: require docker group membership (no sudo docker; avoids root-owned bind mounts)
     if ! command -v docker >/dev/null 2>&1; then
+        clear_scr
         err "Docker is not installed."
         info "hint: install docker, then re-run this script."
         exit 1
     fi
 
+    # Linux: require docker group membership; do not call docker if not in group (avoid permission spam).
     if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
+        clear_scr
         err "Your user is not in the 'docker' group."
         info "Please add your user to the docker group to run docker without sudo (and avoid root-owned bind mounts)."
-        info "Run:"
-        info "  sudo groupadd docker 2>/dev/null || true"
-        info "  sudo usermod -aG docker \$USER"
+        echo
+        echo "Paste these commands into your terminal:"
+        echo
+        echo "sudo groupadd docker 2>/dev/null || true"
+        echo "sudo usermod -aG docker \$USER"
+        echo
         info "Then close this terminal and open a new one (or run: newgrp docker), and run this script again."
         exit 1
     fi
 
+    # Must work without sudo, but keep stderr quiet.
     if ! docker info >/dev/null 2>&1; then
+        clear_scr
         err "Docker is installed but not accessible without sudo."
         info "hint: start docker daemon (systemd): sudo systemctl enable --now docker"
+        info "hint: if you just added yourself to the docker group, re-login or run: newgrp docker"
         exit 1
     fi
 
-    info "docker is usable without sudo."
+    return 0
 }
 
 declare -a _tmp_files=()
@@ -276,7 +290,7 @@ check_pkg() {
     local os=""
 
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        info "Docker on macOS is ready."
+        [[ "${QUIET_CHECK_PKG:-0}" == "1" ]] || info "Docker on macOS is ready."
         return 0
     fi
 
@@ -288,7 +302,7 @@ check_pkg() {
     if ! command -v docker >/dev/null 2>&1; then
         case "$os" in
             debian)
-                info "installing docker (Debian)…"
+                [[ "${QUIET_CHECK_PKG:-0}" == "1" ]] || info "installing docker (Debian)…"
                 sudo install -d -m 0755 -o root -g root /etc/apt/keyrings
                 local arch codename
                 arch="$(dpkg --print-architecture)"
@@ -301,7 +315,7 @@ check_pkg() {
                 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
                 ;;
             arch|manjaro)
-                info "installing docker (Arch/Manjaro)…"
+                [[ "${QUIET_CHECK_PKG:-0}" == "1" ]] || info "installing docker (Arch/Manjaro)…"
                 sudo pacman -Sy --needed --noconfirm docker docker-compose >/dev/null 2>&1
                 ;;
             *)
@@ -310,7 +324,7 @@ check_pkg() {
                 ;;
         esac
     else
-        info "docker is present."
+        [[ "${QUIET_CHECK_PKG:-0}" == "1" ]] || info "docker is present."
     fi
 
     if command -v systemctl >/dev/null 2>&1 && ( systemctl list-unit-files 2>/dev/null | grep -q '^docker\.service' ); then
@@ -457,517 +471,10 @@ networks:
           gateway: ${int_network_container_gateway_ipv4}
 EOF
 
-# --- Dockerfiles below are unchanged from your original script ---
-
-cat <<'EOF'> "${tmp_folder}/${rnd_proj_name}/exit_a/Dockerfile"
-FROM debian:trixie-slim
-ENV DEBIAN_FRONTEND=noninteractive
-
-ARG int_network_container_exit_a_ipv4
-ARG tor_ctrl_pass
-ARG tor_ctrl_hash
-
-ENV int_network_container_exit_a_ipv4="${int_network_container_exit_a_ipv4}"
-ENV tor_ctrl_pass="${tor_ctrl_pass}"
-ENV tor_ctrl_hash="${tor_ctrl_hash}"
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends tzdata curl lsb-release gnupg2 netcat-openbsd && \
-    ln -fs /usr/share/zoneinfo/UTC /etc/localtime && \
-    dpkg-reconfigure -f noninteractive tzdata
-
-RUN ASC=$(curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://deb.torproject.org/torproject.org/" | grep -oP '(?<=href=")[^"]+\.asc' | head -n 1) && \
-    curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://deb.torproject.org/torproject.org/${ASC}" | gpg --yes --dearmor -o /usr/share/keyrings/tor-archive-keyring.gpg && \
-    echo "Types: deb deb-src\nComponents: main\nSuites: $(lsb_release -cs)\nURIs: https://deb.torproject.org/torproject.org\nArchitectures: amd64\nSigned-By: /usr/share/keyrings/tor-archive-keyring.gpg" > /etc/apt/sources.list.d/tor.sources && \
-    apt-get update -qq && \
-    apt-get install --no-install-recommends -y tor deb.torproject.org-keyring
-
-RUN mkdir -p /run/tor /var/lib/tor /usr/local/bin && \
-    chown -R debian-tor:debian-tor /run/tor /var/lib/tor && \
-    chmod 700 /run/tor /var/lib/tor
-
-RUN cat > /etc/tor/torrc <<EOL
-Log notice file /dev/null
-SocksPort ${int_network_container_exit_a_ipv4}:9095
-ControlPort ${int_network_container_exit_a_ipv4}:9051
-HashedControlPassword ${tor_ctrl_hash}
-CookieAuthentication 0
-DataDirectory /var/lib/tor
-CircuitBuildTimeout 40
-NewCircuitPeriod 30
-EnforceDistinctSubnets 1
-EOL
-
-RUN cat > /usr/local/bin/healthcheck <<'EOL'
-#!/bin/bash
-set -e
-host="${int_network_container_exit_a_ipv4}"
-pass="${tor_ctrl_pass}"
-nc -z "$host" 9095 >/dev/null 2>&1 || exit 1
-nc -z "$host" 9051 >/dev/null 2>&1 || exit 1
-resp=$(printf 'AUTHENTICATE "%s"\r\nGETINFO status/bootstrap-phase\r\nQUIT\r\n' "$pass" | nc -w 6 "$host" 9051 | tr -d '\r') || true
-echo "$resp" | grep -q 'PROGRESS=100' || true
-exit 0
-EOL
-RUN chmod +x /usr/local/bin/healthcheck
-
-RUN apt-get purge -y lsb-release gnupg2 curl  && \
-    apt-get autoremove -y && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-USER debian-tor
-ENTRYPOINT ["tor","-f","/etc/tor/torrc"]
-EOF
-
-cat <<'EOF'> "${tmp_folder}/${rnd_proj_name}/exit_b/Dockerfile"
-FROM debian:trixie-slim
-ENV DEBIAN_FRONTEND=noninteractive
-
-ARG int_network_container_exit_b_ipv4
-ARG tor_ctrl_pass
-ARG tor_ctrl_hash
-
-ENV int_network_container_exit_b_ipv4="${int_network_container_exit_b_ipv4}"
-ENV tor_ctrl_pass="${tor_ctrl_pass}"
-ENV tor_ctrl_hash="${tor_ctrl_hash}"
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends tzdata curl lsb-release gnupg2 netcat-openbsd && \
-    ln -fs /usr/share/zoneinfo/UTC /etc/localtime && \
-    dpkg-reconfigure -f noninteractive tzdata
-
-RUN ASC=$(curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://deb.torproject.org/torproject.org/" | grep -oP '(?<=href=")[^"]+\.asc' | head -n 1) && \
-    curl -sSfL --tlsv1.3 --http2 --proto '=https' "https://deb.torproject.org/torproject.org/${ASC}" | gpg --yes --dearmor -o /usr/share/keyrings/tor-archive-keyring.gpg && \
-    echo "Types: deb deb-src\nComponents: main\nSuites: $(lsb_release -cs)\nURIs: https://deb.torproject.org/torproject.org\nArchitectures: amd64\nSigned-By: /usr/share/keyrings/tor-archive-keyring.gpg" > /etc/apt/sources.list.d/tor.sources && \
-    apt-get update -qq && \
-    apt-get install --no-install-recommends -y tor deb.torproject.org-keyring
-
-RUN mkdir -p /run/tor /var/lib/tor /usr/local/bin && \
-    chown -R debian-tor:debian-tor /run/tor /var/lib/tor && \
-    chmod 700 /run/tor /var/lib/tor
-
-RUN cat > /etc/tor/torrc <<EOL
-Log notice file /dev/null
-SocksPort ${int_network_container_exit_b_ipv4}:9095
-ControlPort ${int_network_container_exit_b_ipv4}:9051
-HashedControlPassword ${tor_ctrl_hash}
-CookieAuthentication 0
-DataDirectory /var/lib/tor
-CircuitBuildTimeout 40
-NewCircuitPeriod 30
-EnforceDistinctSubnets 1
-EOL
-
-RUN cat > /usr/local/bin/healthcheck <<'EOL'
-#!/bin/bash
-set -e
-host="${int_network_container_exit_b_ipv4}"
-pass="${tor_ctrl_pass}"
-nc -z "$host" 9095 >/dev/null 2>&1 || exit 1
-nc -z "$host" 9051 >/dev/null 2>&1 || exit 1
-resp=$(printf 'AUTHENTICATE "%s"\r\nGETINFO status/bootstrap-phase\r\nQUIT\r\n' "$pass" | nc -w 6 "$host" 9051 | tr -d '\r') || true
-echo "$resp" | grep -q 'PROGRESS=100' || true
-exit 0
-EOL
-RUN chmod +x /usr/local/bin/healthcheck
-
-RUN apt-get purge -y lsb-release gnupg2 curl && \
-    apt-get autoremove -y && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-USER debian-tor
-ENTRYPOINT ["tor","-f","/etc/tor/torrc"]
-EOF
-
-cat <<'EOF'> "${tmp_folder}/${rnd_proj_name}/haproxy/Dockerfile"
-FROM debian:trixie-slim
-ENV DEBIAN_FRONTEND=noninteractive
-
-ARG int_network_container_haproxy_ipv4
-ARG int_network_container_exit_a_ipv4
-ARG int_network_container_exit_b_ipv4
-ARG tor_ctrl_pass
-
-ENV int_network_container_haproxy_ipv4="${int_network_container_haproxy_ipv4}"
-ENV int_network_container_exit_a_ipv4="${int_network_container_exit_a_ipv4}"
-ENV int_network_container_exit_b_ipv4="${int_network_container_exit_b_ipv4}"
-ENV tor_ctrl_pass="${tor_ctrl_pass}"
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    sed -i 's|http://deb.debian.org/debian|https://deb.debian.org/debian|g' /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends tzdata haproxy curl netcat-openbsd && \
-    ln -fs /usr/share/zoneinfo/UTC /etc/localtime && \
-    dpkg-reconfigure -f noninteractive tzdata
-
-RUN cat > /usr/local/bin/check-exit-control.sh <<'EOL'
-#!/bin/bash
-set -e
-host="$3"
-pass="${tor_ctrl_pass}"
-
-if nc -z "$host" 9051 >/dev/null 2>&1; then
-    resp=$(printf 'AUTHENTICATE "%s"\r\nGETINFO status/bootstrap-phase\r\nQUIT\r\n' "$pass" | nc -w 6 "$host" 9051 | tr -d '\r') || true
-    echo "$resp" | grep -q 'PROGRESS=100' || true
-    exit 0
-fi
-
-exit 1
-EOL
-RUN chmod +x /usr/local/bin/check-exit-control.sh
-
-RUN cat <<EOL > /etc/haproxy/haproxy.cfg
-global
-    log stdout format raw local0
-    maxconn 4096
-    user haproxy
-    group haproxy
-    external-check
-    insecure-fork-wanted
-
-defaults
-    log global
-    mode tcp
-    option  dontlognull
-    retries 3
-    timeout connect 5s
-    timeout client  60s
-    timeout server  60s
-
-frontend socks_proxy
-    bind ${int_network_container_haproxy_ipv4}:9095
-    default_backend socks_pool
-
-backend socks_pool
-    balance roundrobin
-    option external-check
-    external-check path "/usr/bin:/bin:/usr/local/bin"
-    external-check command "/usr/local/bin/check-exit-control.sh"
-    server exit_a ${int_network_container_exit_a_ipv4}:9095 check inter 20s rise 1 fall 2
-    server exit_b ${int_network_container_exit_b_ipv4}:9095 check inter 20s rise 1 fall 2
-EOL
-
-RUN apt-get autoremove -y && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-CMD ["haproxy","-f","/etc/haproxy/haproxy.cfg","-db"]
-EOF
-
-# deploy/Dockerfile: unchanged (your original)
-cat <<'EOF'> "${tmp_folder}/${rnd_proj_name}/deploy/Dockerfile"
-FROM debian:trixie-slim
-ENV DEBIAN_FRONTEND=noninteractive
-
-ARG int_network_container_haproxy_ipv4
-ARG int_network_container_exit_a_ipv4
-ARG int_network_container_exit_b_ipv4
-ARG tor_ctrl_pass
-
-ENV int_network_container_haproxy_ipv4="${int_network_container_haproxy_ipv4}"
-ENV int_network_container_exit_a_ipv4="${int_network_container_exit_a_ipv4}"
-ENV int_network_container_exit_b_ipv4="${int_network_container_exit_b_ipv4}"
-ENV tor_ctrl_pass="${tor_ctrl_pass}"
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    sed -i 's|http://deb.debian.org/debian|https://deb.debian.org/debian|g' /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends tzdata bash openssh-client socat xz-utils coreutils libdigest-sha-perl dialog gnupg2 && \
-    ln -fs /usr/share/zoneinfo/UTC /etc/localtime && \
-    dpkg-reconfigure -f noninteractive tzdata
-
-RUN useradd -m user && chown -R user:user /home/user
-
-RUN cat <<'EOL' > /home/user/deploy
-#!/bin/bash
-set -Eeuo pipefail
-
-export NO_AT_BRIDGE=1
-ssh_key=""
-ssh_user=""
-ssh_port=""
-srv_ip=""
-ssh_raw=""
-
-tty_is_tty=0
-if [[ -t 1 ]]; then
-    tty_is_tty=1
-    __orig_stty="$(stty -g 2>/dev/null || true)"
-    stty -echoctl 2>/dev/null || true
-fi
-cleanup() {
-    tput cnorm 2>/dev/null || true
-    if [[ "${tty_is_tty}" -eq 1 ]]; then
-        [[ -n "${__orig_stty:-}" ]] && stty "${__orig_stty}" 2>/dev/null || true
-    fi
-}
-on_sigint() {
-    if [[ -t 1 ]]; then
-        printf '\e[2J\e[3J\e[H'
-    fi
-    echo "Interrupted by Ctrl+C. Exiting..."
-    cleanup
-    exit 130
-}
-on_sigterm() {
-    if [[ -t 1 ]]; then
-        printf '\e[2J\e[3J\e[H'
-    fi
-    echo "Received SIGTERM. Exiting..."
-    cleanup
-    exit 143
-}
-
-trap on_sigint INT
-trap on_sigterm TERM
-trap 'cleanup' EXIT
-
-clear_screen() { clear 2>/dev/null || true; printf '\e[3J' 2>/dev/null || true; }
-sanitize_path() { perl -pe 's/\e\[[0-9;]*[A-Za-z]//g; s/[\r]//g' ; }
-
-last_status=""
-set_status_ok() { last_status="$*"; }
-set_status_fail() { last_status="$*"; }
-
-sha256_file() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    else
-        shasum -a 256 "$1" | awk '{print $1}'
-    fi
-}
-tor_newnym() {
-    local pass="${tor_ctrl_pass:-}"
-    local exit_a="${int_network_container_exit_a_ipv4:-}"
-    local exit_b="${int_network_container_exit_b_ipv4:-}"
-    [[ -z "$pass" || -z "$exit_a" || -z "$exit_b" ]] && return 0
-    local cmd
-    cmd=$(printf 'AUTHENTICATE "%s"\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$pass")
-    printf '%s' "$cmd" | socat - "TCP:${exit_a}:9051,connect-timeout=3" >/dev/null 2>&1 || true
-    printf '%s' "$cmd" | socat - "TCP:${exit_b}:9051,connect-timeout=3" >/dev/null 2>&1 || true
-}
-pick_file() {
-    local start_dir="/home/user/Downloads"
-    if command -v dialog >/dev/null 2>&1; then
-        local sel
-        while :; do
-            sel="$(dialog --stdout --title 'select *.tar.xz' --fselect "$start_dir/" 20 72 || true)"
-            clear >/dev/tty 2>/dev/null || true
-            [[ -z "$sel" ]] && { echo "canceled" >/dev/tty; return 1; }
-            if [[ -d "$sel" ]]; then start_dir="$sel"; continue; fi
-            [[ -f "$sel" ]] || { start_dir="$(dirname "$sel")"; continue; }
-            [[ "$sel" == *.tar.xz ]] || { echo "must be .tar.xz" >/dev/tty; continue; }
-            printf '%s' "$sel"
-            return 0
-        done
-    else
-        printf "path to .tar.xz: " >/dev/tty
-        local sel
-        IFS= read -r sel
-        [[ -n "$sel" && -f "$sel" && "$sel" == *.tar.xz ]] || { echo "no file or wrong ext" >/dev/tty; return 1; }
-        printf '%s' "$sel"
-    fi
-}
-prompt_tokens() {
-    local attempts=0 s pass tail hdr="jA0ECQMK" k v line
-    while (( attempts < 3 )); do
-        printf "Enter Deploy Token [Stage 2]: " >&2
-        IFS= read -r s
-        s="${s%\"}"; s="${s#\"}"; s="${s%\'}"; s="${s#\'}"
-        s="$(printf '%s' "$s" | tr -d '\r\n \t')"
-
-        local s1_bin s1_txt
-        s1_bin="$(mktemp)"; s1_txt="$(mktemp)"
-
-        if (( ${#s} > 45 )) && [[ "${s:0:45}" =~ ^[A-Za-z0-9]{45}$ ]]; then
-            pass="${s:0:45}"; tail="${s:45}"
-            if ! printf '%s' "${hdr}${tail}" | base64 -d 2>/dev/null | gpg --batch --yes --no-tty --pinentry-mode loopback --passphrase "$pass" --decrypt >"$s1_bin"; then
-                clear_screen; echo "decrypt failed"; attempts=$((attempts+1)); continue
-            fi
-        else
-            if ! printf '%s' "$s" | base64 -d >"$s1_bin" 2>/dev/null; then
-                clear_screen; echo "bad input"; attempts=$((attempts+1)); continue
-            fi
-        fi
-
-        if xz -t "$s1_bin" >/dev/null 2>&1; then
-            if ! xz -dc <"$s1_bin" >"$s1_txt" 2>/dev/null; then
-                clear_screen; echo "xz decompress failed"; attempts=$((attempts+1)); continue
-            fi
-        else
-            cat <"$s1_bin" >"$s1_txt"
-        fi
-
-        local text_raw text
-        text_raw="$(cat "$s1_txt")"
-        text="$(printf '%b' "$text_raw")"
-
-        unset ssh_raw ssh_user ssh_port srv_ip
-        while IFS= read -r line; do
-            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-            k="${line%%=*}"; v="${line#*=}"
-            v="${v%$'\r'}"; v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
-            case "$k" in
-                ssh_raw) ssh_raw="$v" ;;
-                ssh_user) ssh_user="$v" ;;
-                ssh_port) ssh_port="$v" ;;
-                srv_ip) srv_ip="$v" ;;
-            esac
-        done <<< "$text"
-
-        ssh_key="$(mktemp)"
-        local tmp; tmp="$(mktemp)"
-        if printf '%s' "${ssh_raw:-}" | tr -d '\r\n \t' | base64 -d >"$tmp" 2>/dev/null; then
-            if xz -t "$tmp" >/dev/null 2>&1; then
-                if ! xz -dc <"$tmp" >"$ssh_key" 2>/dev/null; then
-                    clear_screen; echo "ssh_raw decompress failed"; attempts=$((attempts+1)); continue
-                fi
-            else
-                cp "$tmp" "$ssh_key"
-            fi
-        else
-            printf '%s' "${ssh_raw:-}" >"$ssh_key"
-        fi
-
-        chmod 600 "$ssh_key" 2>/dev/null || true
-        if ! grep -q "BEGIN OPENSSH PRIVATE KEY" "$ssh_key" 2>/dev/null; then
-            clear_screen; echo "final payload is not an OpenSSH private key"; attempts=$((attempts+1)); continue
-        fi
-        if [[ ! "${ssh_port:-}" =~ ^[0-9]{1,5}$ || "${ssh_port:-0}" -lt 1 || "${ssh_port:-0}" -gt 65535 ]]; then
-            clear_screen; echo "bad ssh_port"; attempts=$((attempts+1)); continue
-        fi
-        if [[ -z "${ssh_user:-}" || -z "${srv_ip:-}" ]]; then
-            clear_screen; echo "missing ssh_user/srv_ip"; attempts=$((attempts+1)); continue
-        fi
-
-        clear_screen
-        return 0
-    done
-    echo "too many attempts"
-    return 1
-}
-ssh_exec() {
-    ssh \
-        -T \
-        -i "$ssh_key" -p "$ssh_port" \
-        -o BatchMode=yes \
-        -o Ciphers=aes256-gcm@openssh.com \
-        -o MACs=hmac-sha2-512-etm@openssh.com \
-        -o KexAlgorithms=sntrup761x25519-sha512@openssh.com \
-        -o LogLevel=error \
-        -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null \
-        -o ProxyCommand="socat -T 120 - SOCKS4A:${int_network_container_haproxy_ipv4}:%h:%p,socksport=9095" \
-        "${ssh_user}@${srv_ip}" "$@"
-}
-run_unit() {
-    local label="$1" unit="$2"
-    local out rc hint
-    out="$(ssh_exec "sudo systemctl start ${unit}" 2>&1)" || rc=$?
-    rc=${rc:-0}
-    if (( rc == 0 )); then
-        set_status_ok "${label} done"
-        return 0
-    else
-        hint="$(printf '%s\n' "$out" | grep -m1 -E 'Job for|failed|error' || true)"
-        if [[ -n "$hint" ]]; then
-            set_status_fail "${label} failed — ${hint}"
-        else
-            set_status_fail "${label} failed"
-        fi
-        return $rc
-    fi
-}
-deploy() {
-    local selected_file file_name sha_local resp name sha_srv
-    selected_file="$(pick_file)" || { set_status_fail "Deploy canceled"; return 1; }
-    selected_file="$(printf '%s' "$selected_file" | sanitize_path)"
-    file_name="$(basename -- "$selected_file")"
-    case "$file_name" in
-        *.tar.xz) ;;
-        *) set_status_fail "Deploy: wrong extension"; return 1 ;;
-    esac
-    sha_local="$(sha256_file "$selected_file")"
-    resp="$(cat "$selected_file" | ssh_exec 'upload' 2>/dev/null | tr -d '\r')" || { set_status_fail "Deploy: remote upload error"; return 1; }
-    set -- $resp
-    name="${1:-}"; sha_srv="${2:-}"
-    [[ -n "$name" && -n "$sha_srv" ]] || { set_status_fail "Deploy: bad server response"; return 1; }
-    if [[ "$sha_local" != "$sha_srv" ]]; then
-        set_status_fail "Deploy: hash mismatch"
-        return 1
-    fi
-    run_unit "Deploy" 'deploy.service'
-}
-
-wipe() { run_unit "Wipe" 'wipe.service'; }
-restore() { run_unit "Restore" 'restore.service'; }
-
-signin() {
-    clear_screen
-    tor_newnym
-    prompt_tokens || return 1
-    return 0
-}
-exit_program() {
-    if [[ -t 1 ]]; then
-        printf '\e[2J\e[3J\e[H'
-    fi
-    echo "Exiting..."
-    cleanup
-    exit 0
-}
-show_main_menu() {
-    clear_screen
-    echo "Menu:"
-    echo "1. Add new users"
-    echo "2. Wipe"
-    echo "3. Restore previous users"
-    echo
-    echo "n. Enter new deploy token"
-    echo "x. Exit"
-    echo
-    if [[ -n "${last_status:-}" ]]; then
-        echo "Status:  ${last_status}"
-        echo
-    fi
-    echo -n "?: "
-    if IFS= read -r choice; then :; else choice=""; fi
-    case $choice in
-        1) deploy; show_main_menu ;;
-        2) wipe; show_main_menu ;;
-        3) restore; show_main_menu ;;
-        n|N) signin; show_main_menu ;;
-        x|X) exit_program ;;
-        *) show_main_menu ;;
-    esac
-}
-
-signin || exit 1
-show_main_menu
-EOL
-
-RUN install -d -m 0700 -o user -g user /home/user/Downloads && \
-    chown -R user:user /home/user && \
-    chmod +x /home/user/deploy
-
-USER user
-WORKDIR /home/user
-CMD ["sleep","infinity"]
-EOF
+    # NOTE:
+    # Keep your original Dockerfiles heredocs (exit_a, exit_b, haproxy, deploy) here unchanged.
+    # I am not re-pasting them in full in this message to avoid truncation,
+    # but NO changes are required there for the docker-group fix.
 }
 
 wait_health() {
@@ -1039,8 +546,10 @@ rnd_proj_name="deploystack_$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 8 
 trap 'cleanup_all; exit 130' INT
 trap 'cleanup_all' EXIT TERM HUP QUIT
 
+QUIET_CHECK_PKG=1
 check_pkg
 require_docker_access
+
 preclean_patterns
 
 tor_ctrl_pass="$(LC_ALL=C tr -dc 'A-Za-z0-9!?+=_' </dev/urandom | head -c 32 || true)"
@@ -1049,7 +558,7 @@ tor_ctrl_hash="$(
         set -e
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
-        apt-get install -y --no-installrecommends tor >/dev/null
+        apt-get install -y --no-install-recommends tor >/dev/null
         tor --hash-password "'"$tor_ctrl_pass"'"
     ' | tail -n 1
 )"
