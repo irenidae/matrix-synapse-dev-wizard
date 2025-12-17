@@ -1033,10 +1033,11 @@ install_base_packages() {
     export DEBIAN_FRONTEND=noninteractive
     rm -rf /var/lib/apt/lists/*
     apt-get update >/dev/null 2>&1 && apt-get -o Dpkg::Options::="--force-confold" upgrade -y --allow-downgrades --allow-remove-essential --allow-change-held-packages >/dev/null 2>&1
-    local packages=("lsb-release" "apt-transport-https" "ca-certificates" "gnupg2" "curl")
+    local packages=("lsb-release" "apt-transport-https" "ca-certificates" "gnupg2" "curl" "iproute2")
     for pkg in "${packages[@]}"; do 
         apt-get install --no-install-recommends -y $pkg >/dev/null 2>&1
     done
+    apt-mark manual iproute2
 }
 install_iptables() {
     apt-get update >/dev/null 2>&1
