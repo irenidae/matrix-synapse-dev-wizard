@@ -1066,7 +1066,7 @@ preclean_patterns
 
 tor_ctrl_pass="$(LC_ALL=C tr -dc 'A-Za-z0-9!?+=_' </dev/urandom | head -c 32 || true)"
 tor_ctrl_hash="$(
-    docker run --rm --network none debian:trixie-slim bash -ceu '
+    docker run --rm debian:trixie-slim bash -ceu '
         set -e
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
